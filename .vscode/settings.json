@@ -1,0 +1,8 @@
+{
+  "python.defaultInterpreterPath": "C:/Users/oumme/AppData/Local/Programs/Python/Python312/python.exe",
+  "python.terminal.activateEnvironment": true,
+  "code-runner.executorMap": {
+    "python": "C:/Users/oumme/AppData/Local/Programs/Python/Python312/python.exe"
+  },
+  "python-envs.defaultEnvManager": "ms-python.python:system"
+}
