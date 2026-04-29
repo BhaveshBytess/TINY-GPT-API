@@ -5,9 +5,12 @@ from pathlib import Path
 
 from api.schemas import (
     EchoRequest, EchoResponse,
-    GenerateRequest, GenerateResponse
+    GenerateRequest, GenerateResponse, 
+    ChatRequest, ChatResponse
 )
 from api.inference import model_inference
+from api.cloud_client import cloud_client, CloudAPIError  # NEW
+import time
 
 
 # ─────────────────────────────────────────
@@ -141,4 +144,78 @@ def generate_text(request: GenerateRequest):
     return GenerateResponse(
         generated_text=generated,
         tokens_generated=tokens_generated,
+    )
+
+
+# chat
+@app.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    """
+    Chat endpoint that routes between local TinyGPT and cloud LLMs.
+    
+    This is where engineering meets ML:
+    - Same interface for two very different backends
+    - User picks the model, we handle the routing
+    - Error handling is specific to each backend's failure modes
+    """
+    start_time = time.time()
+    
+    if request.model == "tiny":
+        if model_inference.model is None:
+            raise HTTPException(
+                status_code=503,
+                detail="TinyGPT is not loaded. Check server logs.",
+            )
+        
+        try:
+            response_text = model_inference.generate(
+                prompt=request.message,
+                max_tokens=request.max_tokens,
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"TinyGPT generation failed: {str(e)}",
+            )
+        
+        model_used = "tiny-gpt"
+    
+    elif request.model == "cloud":
+        if not cloud_client.is_configured():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Cloud provider '{cloud_client.provider}' is not configured. "
+                    f"Set the appropriate API key in .env"
+                ),
+            )
+        
+        try:
+            response_text = await cloud_client.generate(
+                prompt=request.message,
+                max_tokens=request.max_tokens,
+            )
+        except CloudAPIError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Cloud API unavailable: {str(e)}",
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Unexpected error: {str(e)}",
+            )
+        
+        model_used = f"{cloud_client.provider}:{cloud_client.model}"
+    
+    latency_ms = int((time.time() - start_time) * 1000)
+    
+    # Log it
+    print(f"  💬 /chat | model={model_used} | latency={latency_ms}ms "
+          f"| msg='{request.message[:40]}...'")
+    
+    return ChatResponse(
+        response=response_text,
+        model_used=model_used,
+        latency_ms=latency_ms,
     )

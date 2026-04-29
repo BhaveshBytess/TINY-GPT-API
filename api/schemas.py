@@ -32,3 +32,30 @@ class GenerateResponse(BaseModel):
     generated_text: str
     tokens_generated: int
     model_name: str = "tiny-gpt"
+
+
+
+from typing import Literal
+
+class ChatRequest(BaseModel):
+    message: str = Field(
+        ...,
+        min_length=1,
+        max_length=2000,
+        examples=["Explain transformers in one sentence"],
+    )
+    model: Literal["tiny", "cloud"] = Field(
+        default="cloud",
+        description="Which model to use: 'tiny' (local TinyGPT) or 'cloud' (Claude/GPT-4)",
+    )
+    max_tokens: int = Field(
+        default=200,
+        ge=1,
+        le=2000,
+    )
+
+
+class ChatResponse(BaseModel):
+    response: str
+    model_used: str
+    latency_ms: int

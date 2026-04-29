@@ -1,0 +1,4 @@
+# Add if not already there
+.env
+.env.local
+.env.*.local
