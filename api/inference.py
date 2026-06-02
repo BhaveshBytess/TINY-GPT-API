@@ -101,5 +101,37 @@ class ModelInference:
         return generated
 
 
+    @torch.no_grad()
+    def generate_stream(self, prompt: str, max_tokens: int = 50,
+                        temperature: float = 0.8, top_k: int = 40):
+        """
+        Generator version of generate(). Yields one character at a time
+        as it's produced, instead of returning the full string at the end.
+        """
+        if self.model is None:
+            raise RuntimeError("Model not loaded.")
+
+        input_ids = self.dataset.encode(prompt).unsqueeze(0).to(self.device)
+
+        for _ in range(max_tokens):
+            input_ids_cond = input_ids[:, -self.model.max_seq_len:]
+            logits = self.model(input_ids_cond)
+            logits = logits[:, -1, :] / temperature
+
+            if top_k is not None:
+                top_k_values, _ = torch.topk(logits, top_k)
+                min_val = top_k_values[:, -1].unsqueeze(-1)
+                logits[logits < min_val] = float('-inf')
+
+            probs = torch.nn.functional.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            input_ids = torch.cat([input_ids, next_token], dim=1)
+
+            # Decode just this one token and yield it immediately
+            char = self.dataset.idx_to_char[next_token.item()]
+            yield char
+
+
+
 # Singleton instance — created once, shared across all requests
 model_inference = ModelInference()

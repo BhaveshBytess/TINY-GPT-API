@@ -1,51 +1,79 @@
-from fastapi import FastAPI, HTTPException
-from contextlib import asynccontextmanager
+"""
+TinyGPT API — main application.
+
+A GPT-style language model served over HTTP, with cloud LLM fallback,
+structured logging, request tracing, and global error handling.
+"""
+import logging
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 from api.schemas import (
     EchoRequest, EchoResponse,
-    GenerateRequest, GenerateResponse, 
-    ChatRequest, ChatResponse
+    GenerateRequest, GenerateResponse,
+    ChatRequest, ChatResponse,
 )
 from api.inference import model_inference
-from api.cloud_client import cloud_client, CloudAPIError  # NEW
-import time
+from api.cloud_client import cloud_client, CloudAPIError
+from api.logging_config import setup_logging
+from api.middleware import RequestContextMiddleware
+from api.exceptions import register_exception_handlers
+
+import asyncio
+from fastapi.responses import StreamingResponse
+
+from fastapi.staticfiles import StaticFiles
+from api.history import prompt_history
+
+# ─────────────────────────────────────────
+#  Configure logging FIRST — before anything else runs
+# ─────────────────────────────────────────
+setup_logging(level="INFO")
+logger = logging.getLogger(__name__)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 # ─────────────────────────────────────────
-#  Lifespan: runs at startup and shutdown
+#  Lifespan: startup and shutdown
 # ─────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Load model when server starts, clean up when it stops.
-    
-    Why here and not at module level?
-    - Explicit control over when loading happens
-    - Can handle errors gracefully
-    - FastAPI's recommended pattern
-    """
-    print("🚀 Starting up...")
-    project_root = Path(__file__).resolve().parents[1]
-    weights_path = project_root / "model" / "weights" / "tiny_gpt.pt"
-    data_path = project_root / "data" / "tinyshakespeare.txt"
-    
-    if not weights_path.exists():
-        print(f"⚠️  Weights not found at {weights_path}")
-        print(f"   Run training first: cd model && python train.py")
-    elif not data_path.exists():
-        print(f"⚠️  Dataset not found at {data_path}")
+    logger.info("Starting up TinyGPT API...")
+
+    weights_path = PROJECT_ROOT / "model" / "weights" / "tiny_gpt.pt"
+    data_path = PROJECT_ROOT / "data" / "tinyshakespeare.txt"
+
+    try:
+        model_inference.load(str(weights_path), str(data_path))
+        logger.info("TinyGPT model loaded successfully")
+    except FileNotFoundError as exc:
+        logger.warning(
+            "Local model asset missing: %s. weights=%s data=%s. "
+            "/generate and /chat(tiny) will return 503.",
+            exc.filename,
+            weights_path,
+            data_path,
+        )
+    except Exception as e:
+        logger.error("Failed to load model: %s", e, exc_info=True)
+
+    if cloud_client.is_configured():
+        logger.info(
+            "Cloud client configured: provider=%s model=%s",
+            cloud_client.provider, cloud_client.model,
+        )
     else:
-        try:
-            model_inference.load(str(weights_path), str(data_path))
-        except Exception as e:
-            print(f"❌ Failed to load model: {e}")
-    
-    yield  # Server is running, handling requests
-    
-    # Shutdown
-    print("👋 Shutting down...")
+        logger.warning(
+            "Cloud client not configured. /chat(cloud) will return 503."
+        )
+
+    yield  # Server runs here
+
+    logger.info("Shutting down TinyGPT API...")
 
 
 # ─────────────────────────────────────────
@@ -53,28 +81,42 @@ async def lifespan(app: FastAPI):
 # ─────────────────────────────────────────
 app = FastAPI(
     title="TinyGPT API",
-    description="A GPT-style language model built from scratch, served over HTTP.",
+    description="A GPT-style language model built from scratch, with cloud LLM fallback.",
     version="1.0.0",
     lifespan=lifespan,
 )
 
 
 # ─────────────────────────────────────────
+#  Middleware — order matters: CORS first, then RequestContext
+# ─────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],          # Production: list specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.add_middleware(RequestContextMiddleware)
+
+
+# ─────────────────────────────────────────
+#  Global exception handlers
+# ─────────────────────────────────────────
+register_exception_handlers(app)
+
+app.mount("/app", StaticFiles(directory="frontend", html=True), name="frontend")
+
+# ─────────────────────────────────────────
 #  Endpoint 1: Health Check
 # ─────────────────────────────────────────
 @app.get("/health")
 def health_check():
-    """
-    Simple health check.
-    
-    Used by:
-    - Load balancers to know if this server is alive
-    - Monitoring systems to track uptime
-    - You, to verify the server started correctly
-    """
+    """Health check for load balancers and monitoring."""
     return {
         "status": "ok",
         "model_loaded": model_inference.model is not None,
+        "cloud_configured": cloud_client.is_configured(),
     }
 
 
@@ -83,43 +125,24 @@ def health_check():
 # ─────────────────────────────────────────
 @app.post("/echo", response_model=EchoResponse)
 def echo(request: EchoRequest):
-    """
-    Echo back the user's message.
-    
-    Purpose: Learn request/response flow without model complexity.
-    The response_model parameter tells FastAPI:
-      - Validate the OUTPUT matches EchoResponse shape
-      - Generate accurate docs for what this endpoint returns
-    """
-    return EchoResponse(
-        response=f"You said: {request.message}"
-    )
+    """Echo back the user's message. Learning endpoint for request/response flow."""
+    return EchoResponse(response=f"You said: {request.message}")
 
 
 # ─────────────────────────────────────────
-#  Endpoint 3: Generate Text
+#  Endpoint 3: Generate (local TinyGPT only)
 # ─────────────────────────────────────────
 @app.post("/generate", response_model=GenerateResponse)
 def generate_text(request: GenerateRequest):
-    """
-    Generate text using the TinyGPT model.
-    
-    This is where Week 1 meets Week 2:
-    - FastAPI receives the HTTP request
-    - Pydantic validates the input
-    - inference.py runs the model
-    - The result comes back as JSON
-    """
-    # Check if model is loaded
+    """Generate text using the local TinyGPT model."""
     if model_inference.model is None:
         raise HTTPException(
             status_code=503,
-            detail="Model not loaded. Please check server logs."
+            detail="Model not loaded. Please check server logs.",
         )
-    
-    # Time the generation (you'll want this for monitoring later)
+
     start_time = time.time()
-    
+
     try:
         generated = model_inference.generate(
             prompt=request.prompt,
@@ -127,59 +150,53 @@ def generate_text(request: GenerateRequest):
             temperature=request.temperature,
         )
     except Exception as e:
+        # Let the generic handler catch unexpected errors, but wrap
+        # known generation issues clearly
         raise HTTPException(
             status_code=500,
-            detail=f"Generation failed: {str(e)}"
+            detail=f"Generation failed: {str(e)}",
         )
-    
+
     elapsed = time.time() - start_time
-    
-    # Calculate tokens generated (total length minus prompt length)
     tokens_generated = len(generated) - len(request.prompt)
-    
-    # Log it (basic observability — you'll expand this in Phase 4)
-    print(f"  📝 Generated {tokens_generated} tokens in {elapsed:.2f}s "
-          f"| prompt: '{request.prompt[:30]}...'")
-    
+
+    logger.info(
+        "Generate completed: tokens=%d latency=%dms prompt_len=%d",
+        tokens_generated, int(elapsed * 1000), len(request.prompt),
+    )
+
     return GenerateResponse(
         generated_text=generated,
         tokens_generated=tokens_generated,
     )
 
 
-# chat
+# ─────────────────────────────────────────
+#  Endpoint 4: Chat (routes between TinyGPT and cloud)
+# ─────────────────────────────────────────
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
-    Chat endpoint that routes between local TinyGPT and cloud LLMs.
-    
-    This is where engineering meets ML:
-    - Same interface for two very different backends
-    - User picks the model, we handle the routing
-    - Error handling is specific to each backend's failure modes
+    Chat endpoint routing between local TinyGPT and cloud LLMs.
+
+    Note: no try/except for CloudAPIError needed here — the global
+    exception handler registered via register_exception_handlers()
+    catches it and returns 503 automatically.
     """
     start_time = time.time()
-    
+
     if request.model == "tiny":
         if model_inference.model is None:
             raise HTTPException(
                 status_code=503,
                 detail="TinyGPT is not loaded. Check server logs.",
             )
-        
-        try:
-            response_text = model_inference.generate(
-                prompt=request.message,
-                max_tokens=request.max_tokens,
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"TinyGPT generation failed: {str(e)}",
-            )
-        
+        response_text = model_inference.generate(
+            prompt=request.message,
+            max_tokens=request.max_tokens,
+        )
         model_used = "tiny-gpt"
-    
+
     elif request.model == "cloud":
         if not cloud_client.is_configured():
             raise HTTPException(
@@ -189,33 +206,72 @@ async def chat(request: ChatRequest):
                     f"Set the appropriate API key in .env"
                 ),
             )
-        
-        try:
-            response_text = await cloud_client.generate(
-                prompt=request.message,
-                max_tokens=request.max_tokens,
-            )
-        except CloudAPIError as e:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Cloud API unavailable: {str(e)}",
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Unexpected error: {str(e)}",
-            )
-        
+        # CloudAPIError raised here is caught by the global handler → 503
+        response_text = await cloud_client.generate(
+            prompt=request.message,
+            max_tokens=request.max_tokens,
+        )
         model_used = f"{cloud_client.provider}:{cloud_client.model}"
-    
+
     latency_ms = int((time.time() - start_time) * 1000)
-    
-    # Log it
-    print(f"  💬 /chat | model={model_used} | latency={latency_ms}ms "
-          f"| msg='{request.message[:40]}...'")
-    
+
+    logger.info(
+        "Chat completed: model=%s latency=%dms message_len=%d",
+        model_used, latency_ms, len(request.message),
+    )
+
+    prompt_history.add(message=request.message, model=request.model)
+
     return ChatResponse(
         response=response_text,
         model_used=model_used,
         latency_ms=latency_ms,
     )
+
+
+@app.get("/history")
+def get_history():
+    """Return the last N prompts (in-memory, resets on restart)."""
+    return {"history": prompt_history.get_all()}
+
+
+@app.delete("/history")
+def clear_history():
+    """Clear the prompt history."""
+    prompt_history.clear()
+    return {"status": "cleared"}
+
+
+@app.post("/generate/stream")
+async def generate_stream(request: GenerateRequest):
+    """
+    Stream generated tokens one at a time using Server-Sent Events.
+    The client receives 'data: <token>\\n\\n' chunks as they're produced.
+    """
+    if model_inference.model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not loaded.",
+        )
+
+    async def event_generator():
+        try:
+            for token in model_inference.generate_stream(
+                prompt=request.prompt,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+            ):
+                # SSE format: each event is "data: <content>\n\n"
+                yield f"data: {token}\n\n"
+                await asyncio.sleep(0)   # yield control to event loop
+            # Signal completion
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            logger.exception("Streaming failed")
+            yield f"data: [ERROR] {str(e)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+    )
+

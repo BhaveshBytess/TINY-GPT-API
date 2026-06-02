@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TinyGPT Chat</title>
+  <style>
+    body {
+      font-family: -apple-system, system-ui, sans-serif;
+      max-width: 600px;
+      margin: 40px auto;
+      padding: 0 20px;
+      background: #1a1a1a;
+      color: #e0e0e0;
+    }
+    h1 { font-size: 1.4rem; }
+    textarea {
+      width: 100%;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid #444;
+      background: #222;
+      color: #e0e0e0;
+      font-size: 1rem;
+      box-sizing: border-box;
+    }
+    .controls { display: flex; gap: 10px; margin: 10px 0; align-items: center; }
+    select, button {
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 1px solid #444;
+      background: #2a2a2a;
+      color: #e0e0e0;
+      cursor: pointer;
+      font-size: 0.95rem;
+    }
+    button:hover { background: #3a3a3a; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #response {
+      margin-top: 20px;
+      padding: 16px;
+      background: #222;
+      border-radius: 8px;
+      min-height: 60px;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+    .meta { font-size: 0.8rem; color: #888; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>TinyGPT Chat</h1>
+
+  <textarea id="message" rows="3" placeholder="Type a message..."></textarea>
+
+  <div class="controls">
+    <label for="model" style="font-size:0.85rem;">Model:</label>
+    <select id="model" aria-label="Select model">
+      <option value="cloud">Cloud (Mistral)</option>
+      <option value="tiny">Tiny (local)</option>
+    </select>
+    <button id="send" onclick="sendMessage()" aria-label="Send message">Send</button>
+  </div>
+
+  <div id="response">Response will appear here...</div>
+  <div class="meta" id="meta"></div>
+
+  <script>
+    const API_URL = "http://localhost:8000";
+
+    async function sendMessage() {
+      const message = document.getElementById("message").value.trim();
+      const model = document.getElementById("model").value;
+      const responseDiv = document.getElementById("response");
+      const metaDiv = document.getElementById("meta");
+      const button = document.getElementById("send");
+
+      if (!message) {
+        responseDiv.textContent = "Please enter a message.";
+        return;
+      }
+
+      button.disabled = true;
+      responseDiv.textContent = "Thinking...";
+      metaDiv.textContent = "";
+
+      try {
+        const res = await fetch(`${API_URL}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, model, max_tokens: 200 }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          responseDiv.textContent = `Error ${res.status}: ${err.detail}`;
+          return;
+        }
+
+        const data = await res.json();
+        responseDiv.textContent = data.response;
+        metaDiv.textContent =
+          `model: ${data.model_used} · ${data.latency_ms}ms`;
+      } catch (e) {
+        responseDiv.textContent = `Network error: ${e.message}`;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    // Allow Ctrl+Enter to send
+    document.getElementById("message").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) sendMessage();
+    });
+  </script>
+</body>
+</html>
