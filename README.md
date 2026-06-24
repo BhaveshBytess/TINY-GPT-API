@@ -116,8 +116,9 @@ tiny-gpt-api/
 │   ├── transformer.py          # FeedForward, TransformerBlock, TinyGPT
 │   ├── dataset.py              # CharDataset + TinyShakespeare loader (shared vocab)
 │   ├── train.py                # training loop, evaluation, generation
-│   ├── data/tinyshakespeare.txt
 │   └── weights/tiny_gpt.pt
+├── data/
+│   └── tinyshakespeare.txt
 │
 ├── api/                        # The service (Week 2)
 │   ├── main.py                 # FastAPI app + endpoints

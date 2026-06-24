@@ -59,3 +59,44 @@ class ChatResponse(BaseModel):
     response: str
     model_used: str
     latency_ms: int
+
+
+
+from typing import List
+from pydantic import BaseModel, Field
+
+
+class RAGRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=2000,
+                          examples=["How long is the return window?"])
+    top_k: int = Field(default=5, ge=1, le=20)
+    score_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+    max_tokens: int = Field(default=500, ge=1, le=2000)
+
+
+class RAGSource(BaseModel):
+    source: str
+    score: float
+
+
+class RAGResponse(BaseModel):
+    answer: str
+    sources: List[RAGSource]
+    num_chunks_used: int
+    grounded: bool
+    latency_ms: int
+
+
+class DocumentInput(BaseModel):
+    text: str = Field(..., min_length=1)
+    source: str = Field(..., min_length=1)
+
+
+class IngestRequest(BaseModel):
+    documents: List[DocumentInput] = Field(..., min_length=1)
+
+
+class IngestResponse(BaseModel):
+    documents_processed: int
+    chunks_created: int
+    total_chunks_in_store: int

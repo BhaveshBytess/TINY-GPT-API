@@ -26,7 +26,7 @@ class ModelInference:
         self.dataset = None
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    def load(self, weights_path: str, data_path: str):
+    def load(self, weights_path: str | Path, data_path: str | Path):
         """
         Load model weights and vocabulary.
         
@@ -35,8 +35,16 @@ class ModelInference:
         Doing that per request would mean 1-2 second latency
         BEFORE generation even starts. Unacceptable.
         """
+        weights_path = Path(weights_path).resolve()
+        data_path = Path(data_path).resolve()
+
+        if not weights_path.is_file():
+            raise FileNotFoundError(f"Model weights not found: {weights_path}")
+        if not data_path.is_file():
+            raise FileNotFoundError(f"Model dataset not found: {data_path}")
+
         # Load the dataset to get the vocabulary (char_to_idx, idx_to_char)
-        with open(data_path, 'r') as f:
+        with data_path.open("r", encoding="utf-8") as f:
             text = f.read()
         self.dataset = CharDataset(text, seq_len=128)
         
@@ -57,7 +65,7 @@ class ModelInference:
         )
         self.model.eval()       # Set to evaluation mode (disables dropout)
         
-        print(f"✓ Model loaded on {self.device}")
+        print(f"Model loaded on {self.device}")
         print(f"  Vocab size: {self.dataset.vocab_size}")
         print(f"  Parameters: {sum(p.numel() for p in self.model.parameters()):,}")
     

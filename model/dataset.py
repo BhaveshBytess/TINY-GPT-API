@@ -1,5 +1,10 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATA_PATH = PROJECT_ROOT / "data" / "tinyshakespeare.txt"
 
 
 class CharDataset(Dataset):
@@ -25,7 +30,7 @@ class CharDataset(Dataset):
         # Encode entire text as indices
         self.data = torch.tensor([self.char_to_idx[ch] for ch in text], dtype=torch.long)
         
-        print(f"📖 Dataset loaded:")
+        print("Dataset loaded:")
         print(f"   Characters: {len(text):,}")
         print(f"   Vocab size: {self.vocab_size}")
         print(f"   Vocab: {''.join(self.chars[:30])}{'...' if len(self.chars) > 30 else ''}")
@@ -59,25 +64,23 @@ def load_shakespeare(seq_len=128):
     Download the real one from:
     https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
     """
-    import os
+    filepath = DEFAULT_DATA_PATH
     
-    filepath = "data/tinyshakespeare.txt"
-    
-    if os.path.exists(filepath):
-        with open(filepath, 'r') as f:
+    if filepath.is_file():
+        with filepath.open("r", encoding="utf-8") as f:
             text = f.read()
     else:
         # Fallback: create the data directory and remind user to download
-        os.makedirs("data", exist_ok=True)
-        print("⚠️  TinyShakespeare not found! Downloading...")
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        print("TinyShakespeare not found. Downloading...")
         
         try:
             import urllib.request
             url = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
             urllib.request.urlretrieve(url, filepath)
-            with open(filepath, 'r') as f:
+            with filepath.open("r", encoding="utf-8") as f:
                 text = f.read()
-            print(f"✓ Downloaded {len(text):,} characters")
+            print(f"Downloaded {len(text):,} characters")
         except Exception:
             print("Could not download. Using built-in sample text.")
             text = """First Citizen:

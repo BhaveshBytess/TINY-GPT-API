@@ -133,10 +133,10 @@ class CloudLLMClient:
                 )
             except httpx.RequestError as e:
                 raise CloudAPIError(f"Network error calling Mistral: {e}")
-    
-            data = response.json()
-            # Mistral returns same format as OpenAI: {"choices": [{"message": {"content": "..."}}]}
-            return data["choices"][0]["message"]["content"]
+
+        data = response.json()
+        # Mistral returns same format as OpenAI: {"choices": [{"message": {"content": "..."}}]}
+        return data["choices"][0]["message"]["content"]
 
 class CloudAPIError(Exception):
     """Raised when the cloud LLM call fails."""

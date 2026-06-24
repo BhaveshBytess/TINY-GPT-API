@@ -1,7 +1,26 @@
-# Add if not already there
+# Secrets / environment
 .env
 .env.local
 .env.*.local
+
+# Virtualenv
+.venv/
+venv/
+
+# Python caches
 __pycache__/
 *.pyc
+*.pyo
+
+# Vector store (local data, regenerated via /ingest)
 chroma_db/
+chroma_db_*/
+
+# Logs & temp artifacts
+*.log
+.tmp-*/
+.pip-cache/
+.agents/
+
+# Editor
+.vscode/

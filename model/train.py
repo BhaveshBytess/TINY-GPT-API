@@ -2,10 +2,14 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import time
-import os
+from pathlib import Path
 
 from model.transformer import TinyGPT
 from model.dataset import load_shakespeare
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+WEIGHTS_PATH = PROJECT_ROOT / "model" / "weights" / "tiny_gpt.pt"
 
 
 def train():
@@ -126,9 +130,12 @@ def train():
             # Save best model
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                os.makedirs("weights", exist_ok=True)
-                torch.save(model.state_dict(), "weights/tiny_gpt.pt")
-                print(f"  💾 Saved best model (val_loss={val_loss:.4f})\n")
+                WEIGHTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+                torch.save(model.state_dict(), WEIGHTS_PATH)
+                print(
+                    f"  💾 Saved best model to {WEIGHTS_PATH} "
+                    f"(val_loss={val_loss:.4f})\n"
+                )
             
             model.train()
     

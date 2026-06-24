@@ -35,6 +35,8 @@ from api.history import prompt_history
 setup_logging(level="INFO")
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+MODEL_WEIGHTS_PATH = PROJECT_ROOT / "model" / "weights" / "tiny_gpt.pt"
+MODEL_DATA_PATH = PROJECT_ROOT / "data" / "tinyshakespeare.txt"
 
 
 # ─────────────────────────────────────────
@@ -42,38 +44,31 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # ─────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting up TinyGPT API...")
+    logger.info("Starting up...")
 
-    weights_path = PROJECT_ROOT / "model" / "weights" / "tiny_gpt.pt"
-    data_path = PROJECT_ROOT / "data" / "tinyshakespeare.txt"
-
+    # Phase 1: TinyGPT
     try:
-        model_inference.load(str(weights_path), str(data_path))
-        logger.info("TinyGPT model loaded successfully")
-    except FileNotFoundError as exc:
-        logger.warning(
-            "Local model asset missing: %s. weights=%s data=%s. "
-            "/generate and /chat(tiny) will return 503.",
-            exc.filename,
-            weights_path,
-            data_path,
-        )
+        model_inference.load(MODEL_WEIGHTS_PATH, MODEL_DATA_PATH)
+        logger.info("TinyGPT loaded")
     except Exception as e:
-        logger.error("Failed to load model: %s", e, exc_info=True)
+        logger.warning("TinyGPT not loaded: %s", e)
 
+    # Phase 2: embedding model for RAG
+    try:
+        embedding_model.load()
+        logger.info("Embedding model loaded for RAG (store has %d chunks)",
+                    vector_store.count())
+    except Exception as e:
+        logger.error("Embedding model failed to load: %s", e)
+
+    # cloud client check (unchanged)
     if cloud_client.is_configured():
-        logger.info(
-            "Cloud client configured: provider=%s model=%s",
-            cloud_client.provider, cloud_client.model,
-        )
+        logger.info("Cloud client configured: %s", cloud_client.model)
     else:
-        logger.warning(
-            "Cloud client not configured. /chat(cloud) will return 503."
-        )
+        logger.warning("Cloud client not configured")
 
-    yield  # Server runs here
-
-    logger.info("Shutting down TinyGPT API...")
+    yield
+    logger.info("Shutting down...")
 
 
 # ─────────────────────────────────────────
@@ -275,3 +270,82 @@ async def generate_stream(request: GenerateRequest):
         media_type="text/event-stream",
     )
 
+
+import time
+from fastapi import HTTPException
+from rag.pipeline import answer_question
+from rag.embeddings import embedding_model
+from rag.vector_store import vector_store
+from api.schemas import RAGRequest, RAGResponse, RAGSource
+
+
+@app.post("/rag", response_model=RAGResponse)
+async def rag_query(request: RAGRequest):
+    """
+    Answer a question using Retrieval-Augmented Generation.
+
+    Retrieves relevant chunks from the knowledge base, builds a grounded
+    prompt, and returns the LLM's answer with source citations.
+    """
+    # Guard: is anything ingested?
+    if vector_store.count() == 0:
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge base is empty. Ingest documents first via /ingest.",
+        )
+
+    start = time.time()
+
+    # CloudAPIError here is caught by the global handler → 503
+    result = await answer_question(
+        question=request.question,
+        top_k=request.top_k,
+        score_threshold=request.score_threshold,
+        max_tokens=request.max_tokens,
+    )
+
+    latency_ms = int((time.time() - start) * 1000)
+
+    logger.info(
+        "RAG query: grounded=%s chunks=%d latency=%dms q='%s'",
+        result["grounded"], result["num_chunks_used"],
+        latency_ms, request.question[:50],
+    )
+
+    return RAGResponse(
+        answer=result["answer"],
+        sources=[RAGSource(**s) for s in result["sources"]],
+        num_chunks_used=result["num_chunks_used"],
+        grounded=result["grounded"],
+        latency_ms=latency_ms,
+    )
+
+
+from rag.ingest import ingest_documents
+from api.schemas import IngestRequest, IngestResponse
+
+
+@app.post("/ingest", response_model=IngestResponse)
+def ingest(request: IngestRequest):
+    """
+    Ingest documents into the knowledge base.
+
+    Note: this is a synchronous, CPU-bound operation (embedding). For large
+    ingestion jobs, production would offload this to a background worker
+    rather than blocking the request.
+    """
+    # Convert Pydantic models to the dict format the pipeline expects
+    docs = [{"text": d.text, "source": d.source} for d in request.documents]
+
+    summary = ingest_documents(docs)
+
+    logger.info(
+        "Ingest: %d docs → %d chunks",
+        summary["documents"], summary["chunks"],
+    )
+
+    return IngestResponse(
+        documents_processed=summary["documents"],
+        chunks_created=summary["chunks"],
+        total_chunks_in_store=vector_store.count(),
+    )
